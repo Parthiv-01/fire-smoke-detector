@@ -1,0 +1,8 @@
+streamlit
+torch
+torchvision
+torchaudio
+transformers
+av
+pillow
+numpy
