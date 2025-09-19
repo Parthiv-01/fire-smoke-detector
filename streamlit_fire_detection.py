@@ -148,7 +148,7 @@ def detect_fire_smoke(frames, processor, model, device, threshold=0.25):
     """Detect fire and smoke using X-CLIP"""
     text_prompts = [
         "a video of actual fire with flames burning",
-        "a video of real smoke rising from fire", 
+        "a video of real smoke rising", 
         "a video showing dangerous flames",
         "a video of fire emergency with smoke",
         "a video of building or forest fire",
