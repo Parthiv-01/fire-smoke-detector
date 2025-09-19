@@ -1,4 +1,4 @@
-# streamlit_fire_detection.py
+# streamlit_fire_detection.py - Updated with Enhanced RTSP Error Handling
 import streamlit as st
 import torch
 import av
@@ -9,6 +9,10 @@ from datetime import timedelta
 import json
 import warnings
 import os
+import socket
+import subprocess
+import platform
+import re
 warnings.filterwarnings('ignore')
 
 # Page configuration
@@ -49,6 +53,13 @@ st.markdown("""
         border-left: 5px solid #17a2b8;
         background-color: #f3f9ff;
     }
+    .warning-box {
+        padding: 1rem;
+        margin: 1rem 0;
+        border-radius: 0.5rem;
+        border-left: 5px solid #ffc107;
+        background-color: #fffdf3;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -78,6 +89,36 @@ def format_video_duration(seconds):
     else:
         return f"{td.seconds//60:02d}:{td.seconds%60:02d}"
 
+# Enhanced RTSP diagnostic functions
+def check_network_connectivity(ip_address, port=554):
+    """Check if camera IP is reachable"""
+    try:
+        socket.setdefaulttimeout(5)
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        result = sock.connect_ex((ip_address, port))
+        sock.close()
+        return result == 0
+    except Exception as e:
+        return False
+
+def ping_camera(ip_address):
+    """Ping camera IP to check basic connectivity"""
+    try:
+        param = '-n' if platform.system().lower() == 'windows' else '-c'
+        command = ['ping', param, '1', ip_address]
+        result = subprocess.run(command, capture_output=True, text=True, timeout=10)
+        return result.returncode == 0
+    except Exception:
+        return False
+
+def extract_ip_from_rtsp(rtsp_url):
+    """Extract IP address from RTSP URL"""
+    try:
+        ip_match = re.search(r'://(?:[^:]+:[^@]+@)?(\d+\.\d+\.\d+\.\d+)', rtsp_url)
+        return ip_match.group(1) if ip_match else None
+    except:
+        return None
+
 # Model loading function
 @st.cache_resource
 def load_xclip_model():
@@ -86,23 +127,13 @@ def load_xclip_model():
         with st.spinner("🔄 Loading X-CLIP model for first time..."):
             from transformers import AutoProcessor, AutoModel
             
-            # Install required packages if not available
-            try:
-                import torch
-                import av
-            except ImportError:
-                st.error("Required packages not installed. Please install: torch, av, transformers")
-                return None, None, None
-            
             processor = AutoProcessor.from_pretrained("microsoft/xclip-base-patch32")
             model = AutoModel.from_pretrained("microsoft/xclip-base-patch32")
             
-            # Move to GPU if available
             device = "cuda" if torch.cuda.is_available() else "cpu"
             model = model.to(device)
             model.eval()
             
-            # Save locally for offline use
             os.makedirs("./models", exist_ok=True)
             processor.save_pretrained("./models/xclip-processor")
             model.save_pretrained("./models/xclip-model")
@@ -128,7 +159,6 @@ def detect_fire_smoke(frames, processor, model, device, threshold=0.25):
     ]
     
     try:
-        # Ensure exactly 8 frames
         if len(frames) != 8:
             if len(frames) < 8:
                 while len(frames) < 8:
@@ -187,11 +217,356 @@ def detect_fire_smoke(frames, processor, model, device, threshold=0.25):
         st.error(f"Detection error: {e}")
         return None
 
-# Video processing function
+# Enhanced RTSP testing function
+def test_rtsp_connection_enhanced(rtsp_url, processor, model, device, max_clips=3, threshold=0.25):
+    """Enhanced RTSP testing with comprehensive error handling"""
+    
+    # Extract IP from RTSP URL
+    camera_ip = extract_ip_from_rtsp(rtsp_url)
+    
+    st.markdown('<div class="info-box">🔍 <b>Diagnosing RTSP Connection...</b></div>', unsafe_allow_html=True)
+    
+    # Diagnostic results container
+    diag_container = st.container()
+    
+    with diag_container:
+        if camera_ip:
+            st.write(f"📍 **Camera IP**: `{camera_ip}`")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write("🌐 **Network Tests:**")
+                # Ping test
+                with st.spinner("Testing ping..."):
+                    ping_status = ping_camera(camera_ip)
+                if ping_status:
+                    st.success("✅ Ping successful")
+                else:
+                    st.error("❌ Ping failed")
+            
+            with col2:
+                st.write("🔌 **Port Tests:**")
+                # Port connectivity test
+                with st.spinner("Testing port 554..."):
+                    port_status = check_network_connectivity(camera_ip, 554)
+                if port_status:
+                    st.success("✅ Port 554 accessible")
+                else:
+                    st.error("❌ Port 554 blocked")
+                    
+                # Test alternative port
+                with st.spinner("Testing port 8554..."):
+                    alt_port_status = check_network_connectivity(camera_ip, 8554)
+                if alt_port_status:
+                    st.success("✅ Port 8554 accessible")
+                else:
+                    st.warning("⚠️ Port 8554 not accessible")
+    
+    # Generate RTSP URL variations
+    rtsp_variations = [
+        rtsp_url,  # Original
+        rtsp_url.replace(':554/', ':8554/'),  # Alternative port
+        rtsp_url.replace('Streaming/Channels/1', 'stream1'),
+        rtsp_url.replace('Streaming/Channels/1', 'live'),
+        rtsp_url.replace('Streaming/Channels/1', 'h264/ch1/main/av_stream'),
+        rtsp_url.replace('Streaming/Channels/1', 'cam/realmonitor?channel=1&subtype=0'),
+    ]
+    
+    connection_options = [
+        {
+            'rtsp_transport': 'tcp',
+            'rtsp_flags': 'prefer_tcp',
+            'timeout': '5000000',
+            'max_delay': '2000000',
+            'buffer_size': '1024000'
+        },
+        {
+            'rtsp_transport': 'udp',
+            'timeout': '8000000',
+            'max_delay': '3000000',
+        },
+        {
+            'rtsp_transport': 'tcp',
+            'timeout': '10000000',
+            'max_delay': '5000000',
+            'rtsp_flags': 'prefer_tcp+listen'
+        }
+    ]
+    
+    st.markdown('<div class="info-box">🔄 <b>Testing Connection Methods...</b></div>', unsafe_allow_html=True)
+    
+    # Progress tracking
+    total_attempts = min(len(rtsp_variations), 4) * len(connection_options)
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    attempt = 0
+    
+    for i, url_variant in enumerate(rtsp_variations[:4]):  # Test first 4 variations
+        for j, options in enumerate(connection_options):
+            attempt += 1
+            progress_bar.progress(attempt / total_attempts)
+            
+            try:
+                status_text.text(f"🔗 Attempt {attempt}/{total_attempts}: Testing connection...")
+                
+                # Show current attempt details
+                with st.expander(f"Attempt {attempt} Details", expanded=False):
+                    st.code(f"URL: {url_variant}")
+                    st.json(options)
+                
+                # Try connection
+                container = av.open(url_variant, options=options)
+                video_stream = container.streams.video[0]
+                
+                st.success(f"✅ **Connection successful on attempt {attempt}!**")
+                st.info(f"📹 Stream: {video_stream.width}x{video_stream.height}")
+                st.info(f"🔗 Working URL: `{url_variant}`")
+                
+                # Test frame processing
+                alerts = test_rtsp_frames(container, processor, model, device, max_clips, threshold)
+                
+                status_text.text("✅ RTSP connection and processing successful!")
+                progress_bar.progress(1.0)
+                
+                return alerts, url_variant
+                
+            except Exception as e:
+                error_msg = str(e)
+                
+                # Categorize errors
+                if "Connection timed out" in error_msg:
+                    error_type = "⏰ Timeout"
+                    color = "warning"
+                elif "Connection refused" in error_msg:
+                    error_type = "🚫 Connection Refused"
+                    color = "error"
+                elif "No route to host" in error_msg:
+                    error_type = "🌐 Network Unreachable"
+                    color = "error"
+                elif "Authentication" in error_msg or "401" in error_msg:
+                    error_type = "🔐 Authentication Failed"
+                    color = "error"
+                else:
+                    error_type = "❌ Other Error"
+                    color = "warning"
+                
+                # Show error in expandable section
+                with st.expander(f"Attempt {attempt}: {error_type}", expanded=False):
+                    if color == "error":
+                        st.error(f"{error_type}: {error_msg[:200]}...")
+                    else:
+                        st.warning(f"{error_type}: {error_msg[:200]}...")
+                
+                continue
+    
+    # All attempts failed
+    progress_bar.progress(1.0)
+    status_text.text("❌ All connection attempts failed")
+    
+    show_rtsp_troubleshooting_guide(camera_ip, rtsp_url)
+    return [], None
+
+def test_rtsp_frames(container, processor, model, device, max_clips, threshold):
+    """Process frames from successful RTSP connection"""
+    try:
+        video_stream = container.streams.video[0]
+        original_fps = float(video_stream.average_rate) if video_stream.average_rate else 25.0
+        frame_interval = max(1, int(original_fps // 2))
+        
+        frames_buffer = []
+        alerts = []
+        frame_count = 0
+        clip_count = 0
+        
+        frame_progress = st.progress(0)
+        frame_status = st.empty()
+        
+        st.success("🎬 Processing frames from RTSP stream...")
+        
+        for frame in container.decode(video=0):
+            frame_count += 1
+            progress = min(clip_count / max_clips, 1.0)
+            frame_progress.progress(progress)
+            
+            if frame_count % frame_interval == 0:
+                try:
+                    img = frame.to_image()
+                    img = img.resize((224, 224))
+                    frames_buffer.append(img)
+                    
+                    if len(frames_buffer) >= 8:
+                        clip_count += 1
+                        frame_status.text(f"🔍 Analyzing clip {clip_count}/{max_clips}...")
+                        
+                        results = detect_fire_smoke(
+                            frames_buffer[:8], processor, model, device, threshold
+                        )
+                        
+                        if results and results['fire_detected']:
+                            alert = {
+                                'clip_number': clip_count,
+                                'confidence': results['detection_confidence'],
+                                'details': results
+                            }
+                            alerts.append(alert)
+                            
+                            st.markdown(
+                                f'''<div class="alert-box">
+                                🚨 <b>LIVE ALERT #{len(alerts)}</b><br>
+                                Clip {clip_count} | Confidence: {results['detection_confidence']:.3f}<br>
+                                🔥 Fire: {results['fire_probability']:.3f} | 💨 Smoke: {results['smoke_probability']:.3f}
+                                </div>''', 
+                                unsafe_allow_html=True
+                            )
+                        else:
+                            st.info(f"✅ Clip {clip_count}: Normal scene")
+                        
+                        frames_buffer = frames_buffer[-2:]
+                        
+                        if clip_count >= max_clips:
+                            break
+                            
+                except Exception as frame_error:
+                    st.warning(f"⚠️ Frame {frame_count} error: {str(frame_error)[:100]}")
+                    continue
+        
+        container.close()
+        frame_status.text(f"✅ Processing complete - {clip_count} clips analyzed")
+        frame_progress.progress(1.0)
+        
+        return alerts
+        
+    except Exception as e:
+        st.error(f"Frame processing error: {e}")
+        if 'container' in locals():
+            container.close()
+        return []
+
+def show_rtsp_troubleshooting_guide(camera_ip, original_url):
+    """Show comprehensive troubleshooting guide"""
+    
+    st.markdown('<div class="alert-box">❌ <b>All RTSP connection attempts failed</b></div>', unsafe_allow_html=True)
+    
+    with st.expander("🔧 **Comprehensive Troubleshooting Guide**", expanded=True):
+        
+        tab1, tab2, tab3, tab4 = st.tabs(["🔍 Quick Fixes", "🌐 Network", "📹 Camera", "🔗 URLs"])
+        
+        with tab1:
+            st.markdown("### 🚀 **Try These URLs First:**")
+            
+            quick_urls = [
+                original_url.replace(':554/', ':8554/'),
+                original_url.replace('Streaming/Channels/1', 'stream1'),
+                original_url.replace('Streaming/Channels/1', 'live'),
+                original_url.replace('Streaming/Channels/1', 'h264/ch1/main/av_stream'),
+                f"rtsp://admin:OSUUTH@{camera_ip}:554/cam/realmonitor?channel=1&subtype=0"
+            ]
+            
+            for i, url in enumerate(quick_urls, 1):
+                st.code(f"{i}. {url}")
+            
+            st.markdown("### 🎯 **Immediate Actions:**")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                if st.button("🌐 Test Web Interface"):
+                    st.info(f"Open in browser: http://{camera_ip}")
+                    st.caption("If web interface works, RTSP should be available")
+            
+            with col2:
+                if st.button("📱 Generate VLC Command"):
+                    st.code(f"vlc {original_url}")
+                    st.caption("Test URL with VLC Media Player")
+        
+        with tab2:
+            st.markdown("### 🌐 **Network Troubleshooting:**")
+            
+            if camera_ip:
+                st.markdown(f"""
+                **Manual Network Tests:**
+                ```
+                # Ping test
+                ping {camera_ip}
+                
+                # Port test (Windows)
+                telnet {camera_ip} 554
+                
+                # Port test (Linux/Mac)
+                nc -zv {camera_ip} 554
+                ```
+                """)
+            
+            st.markdown("""
+            **Common Network Issues:**
+            - ❌ Camera and computer on different subnets
+            - ❌ Firewall blocking port 554/8554
+            - ❌ Router blocking RTSP traffic
+            - ❌ Network congestion or packet loss
+            - ❌ VPN interfering with local network
+            """)
+        
+        with tab3:
+            st.markdown("### 📹 **Camera Configuration:**")
+            
+            st.markdown("""
+            **Check Camera Settings:**
+            1. **RTSP Service**: Must be enabled
+            2. **User Permissions**: RTSP access allowed
+            3. **Connection Limit**: May have max concurrent connections
+            4. **Stream Settings**: Main/sub stream configuration
+            5. **Authentication**: Username/password correct
+            
+            **Common Camera Issues:**
+            - ❌ RTSP disabled in camera settings
+            - ❌ User lacks RTSP permissions  
+            - ❌ Maximum connections reached
+            - ❌ Wrong credentials or expired password
+            - ❌ Camera firmware needs update
+            """)
+            
+            st.info("💡 **Tip**: Access camera web interface to verify RTSP settings")
+        
+        with tab4:
+            st.markdown("### 🔗 **Brand-Specific URL Formats:**")
+            
+            brand_formats = {
+                "Hikvision": [
+                    "/Streaming/Channels/1",
+                    "/Streaming/Channels/101", 
+                    "/h264/ch1/main/av_stream"
+                ],
+                "Dahua": [
+                    "/cam/realmonitor?channel=1&subtype=0",
+                    "/live/ch1"
+                ],
+                "Axis": [
+                    "/axis-media/media.amp",
+                    "/mjpg/video.mjpg"
+                ],
+                "Foscam": [
+                    "/videoMain",
+                    "/video.cgi"
+                ],
+                "Generic": [
+                    "/stream1",
+                    "/live", 
+                    "/video",
+                    "/cam1"
+                ]
+            }
+            
+            for brand, formats in brand_formats.items():
+                with st.expander(f"📹 {brand} URLs"):
+                    for fmt in formats:
+                        if camera_ip:
+                            st.code(f"rtsp://admin:OSUUTH@{camera_ip}:554{fmt}")
+
+# Video processing function (unchanged)
 def process_video_file(video_file, processor, model, device, threshold=0.25):
     """Process uploaded video file"""
     try:
-        # Save uploaded file temporarily
         with open("temp_video.mp4", "wb") as f:
             f.write(video_file.getvalue())
         
@@ -206,7 +581,6 @@ def process_video_file(video_file, processor, model, device, threshold=0.25):
         detection_count = 0
         alerts = []
         
-        # Create progress bar
         progress_bar = st.progress(0)
         status_text = st.empty()
         
@@ -242,84 +616,13 @@ def process_video_file(video_file, processor, model, device, threshold=0.25):
                     frames_buffer = frames_buffer[-2:]
         
         container.close()
-        os.remove("temp_video.mp4")  # Clean up temp file
+        os.remove("temp_video.mp4")
         
         return alerts, total_duration, detection_count
         
     except Exception as e:
         st.error(f"Video processing error: {e}")
         return [], 0, 0
-
-# RTSP testing function
-def test_rtsp_stream(rtsp_url, processor, model, device, max_clips=5, threshold=0.25):
-    """Test RTSP stream"""
-    try:
-        container = av.open(rtsp_url, options={
-            'rtsp_transport': 'tcp',
-            'max_delay': '5000000',
-            'timeout': '10000000'
-        })
-        
-        video_stream = container.streams.video[0]
-        original_fps = float(video_stream.average_rate) if video_stream.average_rate else 25.0
-        frame_interval = max(1, int(original_fps))
-        
-        frames_buffer = []
-        alerts = []
-        frame_count = 0
-        clip_count = 0
-        
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        alert_container = st.empty()
-        
-        for frame in container.decode(video=0):
-            frame_count += 1
-            progress = min(clip_count / max_clips, 1.0)
-            progress_bar.progress(progress)
-            
-            if frame_count % frame_interval == 0:
-                img = frame.to_image()
-                img = img.resize((224, 224))
-                frames_buffer.append(img)
-                
-                if len(frames_buffer) >= 8:
-                    clip_count += 1
-                    status_text.text(f"🔍 Processing live stream clip {clip_count}/{max_clips}...")
-                    
-                    results = detect_fire_smoke(
-                        frames_buffer[:8], processor, model, device, threshold
-                    )
-                    
-                    if results and results['fire_detected']:
-                        alert = {
-                            'clip_number': clip_count,
-                            'confidence': results['detection_confidence'],
-                            'details': results
-                        }
-                        alerts.append(alert)
-                        
-                        # Show immediate alert
-                        alert_container.markdown(
-                            f"""<div class="alert-box">
-                            🚨 <b>LIVE ALERT #{len(alerts)}</b><br>
-                            Clip: {clip_count} | Confidence: {results['detection_confidence']:.3f}<br>
-                            🔥 Fire: {results['fire_probability']:.3f} | 💨 Smoke: {results['smoke_probability']:.3f}
-                            </div>""", 
-                            unsafe_allow_html=True
-                        )
-                    
-                    frames_buffer = frames_buffer[-2:]
-                    
-                    if clip_count >= max_clips:
-                        break
-        
-        container.close()
-        return alerts
-        
-    except Exception as e:
-        st.error(f"RTSP connection error: {e}")
-        return []
 
 # Main Streamlit App
 def main():
@@ -360,7 +663,7 @@ def main():
         )
         
         # Main tabs
-        tab1, tab2, tab3 = st.tabs(["📹 Video File Analysis", "🔴 RTSP Stream Test", "ℹ️ System Info"])
+        tab1, tab2, tab3 = st.tabs(["📹 Video File Analysis", "🔴 Enhanced RTSP Test", "ℹ️ System Info"])
         
         with tab1:
             st.header("📹 Video File Fire & Smoke Detection")
@@ -376,7 +679,7 @@ def main():
                 
                 with col2:
                     st.video(uploaded_file)
-                    file_size = uploaded_file.size / (1024*1024)  # MB
+                    file_size = uploaded_file.size / (1024*1024)
                     st.caption(f"File size: {file_size:.1f} MB")
                 
                 with col1:
@@ -391,7 +694,7 @@ def main():
                             threshold
                         )
                         
-                        # Results
+                        # Results display (same as before)
                         st.header("📊 Analysis Results")
                         
                         col1, col2, col3, col4 = st.columns(4)
@@ -408,7 +711,6 @@ def main():
                         if alerts:
                             st.markdown('<div class="alert-box">🚨 <b>FIRE/SMOKE DETECTED!</b></div>', unsafe_allow_html=True)
                             
-                            # Detailed results
                             for i, alert in enumerate(alerts, 1):
                                 with st.expander(f"🚨 Alert #{i} - [{alert['timestamp_formatted']}]"):
                                     details = alert['details']
@@ -423,7 +725,7 @@ def main():
                                     
                                     st.json(details)
                             
-                            # Export timestamps
+                            # Export functionality
                             timestamp_data = []
                             for alert in alerts:
                                 timestamp_data.append({
@@ -441,24 +743,28 @@ def main():
                             st.markdown('<div class="success-box">✅ <b>No fire or smoke detected</b> - All clear!</div>', unsafe_allow_html=True)
         
         with tab2:
-            st.header("🔴 Live RTSP Stream Testing")
+            st.header("🔴 Enhanced RTSP Stream Testing")
+            st.caption("Advanced diagnostics and multiple connection methods")
+            
+            # Show the problematic URL as an example
+            st.markdown('<div class="warning-box">⚠️ <b>Current Issue:</b> Connection timeout to camera</div>', unsafe_allow_html=True)
             
             rtsp_url = st.text_input(
                 "RTSP Stream URL",
-                placeholder="rtsp://camera_ip:port/stream",
-                help="Enter your camera's RTSP stream URL"
+                value="rtsp://admin:OSUUTH@192.168.10.211:554/Streaming/Channels/1",
+                help="Your camera's RTSP stream URL with credentials"
             )
             
-            col1, col2 = st.columns(2)
+            col1, col2, col3 = st.columns(3)
             with col1:
-                max_clips = st.number_input("Max clips to test", min_value=1, max_value=50, value=10)
+                max_clips = st.number_input("Max test clips", min_value=1, max_value=10, value=3)
             with col2:
-                timeout = st.number_input("Timeout (seconds)", min_value=10, max_value=300, value=60)
+                run_diagnostics = st.checkbox("Run network diagnostics", value=True)
+            with col3:
+                show_attempts = st.checkbox("Show all attempts", value=False)
             
-            if rtsp_url and st.button("🔴 Start RTSP Test", type="primary"):
-                st.info("📡 Connecting to RTSP stream...")
-                
-                alerts = test_rtsp_stream(
+            if rtsp_url and st.button("🔴 Start Enhanced RTSP Test", type="primary"):
+                alerts, working_url = test_rtsp_connection_enhanced(
                     rtsp_url,
                     st.session_state.processor,
                     st.session_state.model,
@@ -467,10 +773,13 @@ def main():
                     threshold
                 )
                 
-                st.header("📊 RTSP Test Results")
+                st.header("📊 Enhanced RTSP Test Results")
+                
+                if working_url:
+                    st.markdown(f'<div class="success-box">✅ <b>Connection Success!</b><br>Working URL: <code>{working_url}</code></div>', unsafe_allow_html=True)
                 
                 if alerts:
-                    st.markdown('<div class="alert-box">🚨 <b>LIVE ALERTS DETECTED!</b></div>', unsafe_allow_html=True)
+                    st.markdown('<div class="alert-box">🚨 <b>LIVE FIRE/SMOKE ALERTS DETECTED!</b></div>', unsafe_allow_html=True)
                     
                     for alert in alerts:
                         details = alert['details']
@@ -484,10 +793,11 @@ def main():
                         with col3:
                             st.metric("📊 Combined", f"{details['fire_smoke_combined']:.3f}")
                 else:
-                    st.markdown('<div class="success-box">✅ <b>No alerts</b> from RTSP stream test</div>', unsafe_allow_html=True)
+                    if working_url:
+                        st.markdown('<div class="success-box">✅ <b>No fire/smoke detected</b> in RTSP test</div>', unsafe_allow_html=True)
         
         with tab3:
-            st.header("ℹ️ System Information")
+            st.header("ℹ️ System Information & Help")
             
             col1, col2 = st.columns(2)
             
@@ -507,7 +817,8 @@ def main():
                 ✅ Smoke detection (all types)  
                 ✅ Reduced false positives  
                 ✅ Video timeline analysis  
-                ✅ Live RTSP stream support  
+                ✅ Enhanced RTSP diagnostics  
+                ✅ Multiple connection methods  
                 ✅ Confidence scoring
                 """)
             
@@ -530,13 +841,14 @@ def main():
                     gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
                     st.metric("GPU Memory", f"{gpu_memory:.1f} GB")
                 
-                st.subheader("📋 Usage Instructions")
+                st.subheader("🔧 RTSP Troubleshooting")
                 st.markdown("""
-                1. **Load Model** (first time only)
-                2. **Upload video** or **enter RTSP URL**
-                3. **Adjust threshold** if needed
-                4. **Run detection** and review results
-                5. **Download timestamps** for incidents
+                **Common Solutions:**
+                1. Try port 8554 instead of 554
+                2. Use simple paths like `/stream1`
+                3. Check camera web interface
+                4. Verify network connectivity
+                5. Test with VLC first
                 """)
 
 if __name__ == "__main__":
